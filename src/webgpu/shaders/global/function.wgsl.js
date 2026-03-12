@@ -89,6 +89,18 @@ export const includeLibrary = {
       }
       return count;
     }
+
+    fn gestureCenter(ratio: vec2f) -> vec2f {
+      return global.gestureTransform.xy * ratio;
+    }
+
+    fn gestureZoom() -> f32 {
+      return global.gestureTransform.z;
+    }
+
+    fn gestureAngle() -> f32 {
+      return global.gestureTransform.w;
+    }
   `,
   },
 };
