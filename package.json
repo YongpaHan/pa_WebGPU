@@ -1,0 +1,22 @@
+{
+  "name": "webgpu-template",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "mobile": "node scripts/mobile-dev.mjs",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^8.0.0-beta.13"
+  },
+  "overrides": {
+    "vite": "^8.0.0-beta.13"
+  },
+  "dependencies": {
+    "reset-css": "^5.0.2",
+    "webgpu-utils": "^2.0.3"
+  }
+}
