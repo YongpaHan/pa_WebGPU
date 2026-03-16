@@ -30,6 +30,20 @@ const ALLOWED_VIEW_DIMENSIONS = new Set([
   "cube",
   "cube_array",
 ]);
+const ALLOWED_STORAGE_TEXTURE_ACCESS = new Set(["write", "read", "read_write"]);
+const ALLOWED_STORAGE_TEXTURE_VIEW_DIMENSIONS = new Set([
+  "1d",
+  "2d",
+  "2d_array",
+  "3d",
+]);
+const STORAGE_TEXTURE_SPEC_KEYS = new Set([
+  "name",
+  "as",
+  "format",
+  "access",
+  "viewDimension",
+]);
 const MSDF_GLYPHS_STRUCT_NAME = "MsdfGlyphs";
 
 function asArray(value) {
@@ -132,6 +146,104 @@ function normalizeTextureSpec(spec, index) {
 function normalizeTextures(textures) {
   return asArray(textures).map((spec, index) =>
     normalizeTextureSpec(spec, index)
+  );
+}
+
+function isStorageTextureSpecObject(value) {
+  if (!isPlainObject(value)) return false;
+  return Object.keys(value).some((key) => STORAGE_TEXTURE_SPEC_KEYS.has(key));
+}
+
+function normalizeStorageTextureSpec(spec, index, defaultName = null) {
+  if (typeof spec === "string") {
+    spec = defaultName
+      ? {
+          format: spec,
+        }
+      : {
+          name: spec,
+        };
+  }
+
+  if (!isPlainObject(spec)) {
+    throw new Error(
+      `buildComputeShader: storageTextures[${index}]는 문자열 또는 객체여야 합니다.`
+    );
+  }
+
+  if (
+    defaultName &&
+    spec.name != null &&
+    String(spec.name).trim() &&
+    String(spec.name).trim() !== defaultName
+  ) {
+    throw new Error(
+      `buildComputeShader: storageTextures.${defaultName}.name은 객체 키와 같아야 합니다.`
+    );
+  }
+
+  const name = String(spec.name ?? defaultName ?? "").trim();
+  if (!name) {
+    throw new Error(
+      `buildComputeShader: storageTextures[${index}].name이 필요합니다.`
+    );
+  }
+
+  const as = String(spec.as ?? name).trim();
+  if (!isIdentifier(as)) {
+    throw new Error(
+      `buildComputeShader: storageTextures[${index}].as가 잘못되었습니다.`
+    );
+  }
+
+  const access = String(spec.access ?? "write").trim();
+  if (!ALLOWED_STORAGE_TEXTURE_ACCESS.has(access)) {
+    throw new Error(
+      `buildComputeShader: storageTextures[${index}].access는 write/read/read_write 중 하나여야 합니다.`
+    );
+  }
+
+  const format = String(spec.format ?? "rgba8unorm").trim();
+  if (!format) {
+    throw new Error(
+      `buildComputeShader: storageTextures[${index}].format이 필요합니다.`
+    );
+  }
+
+  const viewDimension = String(spec.viewDimension ?? "2d").trim();
+  if (!ALLOWED_STORAGE_TEXTURE_VIEW_DIMENSIONS.has(viewDimension)) {
+    throw new Error(
+      `buildComputeShader: storageTextures[${index}].viewDimension이 지원되지 않습니다.`
+    );
+  }
+
+  return {
+    name,
+    as,
+    access,
+    format,
+    viewDimension,
+  };
+}
+
+function normalizeStorageTextures(storageTextures) {
+  if (!storageTextures) return [];
+  if (Array.isArray(storageTextures)) {
+    return storageTextures.map((spec, index) =>
+      normalizeStorageTextureSpec(spec, index)
+    );
+  }
+  if (!isPlainObject(storageTextures)) {
+    throw new Error(
+      "buildComputeShader: storageTextures는 배열 또는 이름 기반 객체여야 합니다."
+    );
+  }
+  if (isStorageTextureSpecObject(storageTextures)) {
+    return [normalizeStorageTextureSpec(storageTextures, 0)];
+  }
+
+  return Object.entries(storageTextures).map(([name, spec], index) =>
+    normalizeStorageTextureSpec(spec, index, name)
   );
 }
 
@@ -501,6 +613,59 @@ function buildGroup1Contract(localUniform, textures, storages) {
   };
 }
 
+function buildComputeGroup1Contract(
+  localUniform,
+  textures,
+  storageTextures,
+  storages
+) {
+  const hasLocalUniform = Boolean(localUniform);
+  const baseBinding = hasLocalUniform ? 1 : 0;
+
+  const textureContracts = textures.map((texture, index) => {
+    const textureBinding = baseBinding + index * 2;
+    const samplerBinding = textureBinding + 1;
+    return {
+      ...texture,
+      varName: texture.as,
+      samplerName: `${texture.as}Sampler`,
+      textureBinding,
+      samplerBinding,
+    };
+  });
+
+  const storageTextureBaseBinding = baseBinding + textureContracts.length * 2;
+  const storageTextureContracts = storageTextures.map(
+    (storageTexture, index) => ({
+      ...storageTexture,
+      varName: storageTexture.as,
+      binding: storageTextureBaseBinding + index,
+    })
+  );
+
+  const storageBaseBinding =
+    storageTextureBaseBinding + storageTextureContracts.length;
+  const storageContracts = storages.map((storage, index) => ({
+    ...storage,
+    varName: storage.as,
+    binding: storageBaseBinding + index,
+  }));
+
+  return {
+    uniform: hasLocalUniform
+      ? {
+          binding: 0,
+          varName: localUniform.varName,
+          structName: localUniform.structName,
+          fields: localUniform.fields,
+        }
+      : null,
+    textures: textureContracts,
+    storageTextures: storageTextureContracts,
+    storages: storageContracts,
+  };
+}
+
 function buildLocalUniformCode(localUniform, group1) {
   if (!group1.uniform || !localUniform) return "";
 
@@ -533,6 +698,20 @@ var ${texture.varName}: ${textureType};
 var ${texture.samplerName}: sampler;
 `.trim();
     })
+    .join("\n\n");
+}
+
+function buildStorageTextureCode(group1) {
+  if (!Array.isArray(group1.storageTextures)) return "";
+  if (group1.storageTextures.length === 0) return "";
+
+  return group1.storageTextures
+    .map(
+      (storageTexture) => `
+@group(1) @binding(${storageTexture.binding})
+var ${storageTexture.varName}: texture_storage_${storageTexture.viewDimension}<${storageTexture.format}, ${storageTexture.access}>;
+`.trim()
+    )
     .join("\n\n");
 }
 
@@ -659,6 +838,192 @@ function validateShader({ shader, localUniform, group1, defines, includes }) {
   }
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeWorkgroupSize(workgroupSize) {
+  if (!Array.isArray(workgroupSize)) {
+    throw new Error("buildComputeShader: workgroupSize는 배열이어야 합니다.");
+  }
+  if (workgroupSize.length === 0 || workgroupSize.length > 3) {
+    throw new Error(
+      "buildComputeShader: workgroupSize는 [x], [x,y], [x,y,z] 형태여야 합니다."
+    );
+  }
+
+  const values = [workgroupSize[0], workgroupSize[1] ?? 1, workgroupSize[2] ?? 1]
+    .map((value, index) => {
+      const n = Math.floor(Number(value));
+      if (!Number.isFinite(n) || n <= 0) {
+        throw new Error(
+          `buildComputeShader: workgroupSize[${index}]는 0보다 큰 정수여야 합니다.`
+        );
+      }
+      return n;
+    });
+
+  return values;
+}
+
+function injectComputeEntrypointAttribute(shader, entryPoint, workgroupSize) {
+  if (/@workgroup_size\s*\(/.test(shader)) {
+    throw new Error(
+      "buildComputeShader: shader 본문에 @workgroup_size를 직접 선언하지 마세요. workgroupSize 옵션을 사용하세요."
+    );
+  }
+  if (/@compute\b/.test(shader)) {
+    throw new Error(
+      "buildComputeShader: shader 본문에 @compute를 직접 선언하지 마세요. buildComputeShader가 자동 주입합니다."
+    );
+  }
+
+  const escapedEntryPoint = escapeRegExp(entryPoint);
+  const fnPattern = new RegExp(
+    `(^|\\n)([ \\t]*)(fn\\s+${escapedEntryPoint}\\s*\\()`
+  );
+  if (!fnPattern.test(shader)) {
+    throw new Error(
+      `buildComputeShader: shader에 '${entryPoint}' 함수가 필요합니다.`
+    );
+  }
+
+  const [x, y, z] = workgroupSize;
+  return shader.replace(
+    fnPattern,
+    (match, lineStart, indent, fnDecl) =>
+      `${lineStart}${indent}@compute @workgroup_size(${x}, ${y}, ${z})\n${indent}${fnDecl}`
+  );
+}
+
+function validateComputeShader({
+  shader,
+  entryPoint,
+  localUniform,
+  group1,
+  defines,
+  includes,
+}) {
+  if (typeof shader !== "string" || !shader.trim()) {
+    throw new Error("buildComputeShader: shader 문자열이 필요합니다.");
+  }
+  if (!isIdentifier(entryPoint)) {
+    throw new Error(
+      `buildComputeShader: entryPoint 이름이 잘못되었습니다. (${entryPoint})`
+    );
+  }
+  if (!new RegExp(`\\bfn\\s+${escapeRegExp(entryPoint)}\\s*\\(`).test(shader)) {
+    throw new Error(
+      `buildComputeShader: shader에 ${entryPoint} 함수가 필요합니다.`
+    );
+  }
+
+  const usedNames = new Set(["global", "GlobalUniforms"]);
+  if (localUniform) {
+    usedNames.add(localUniform.structName);
+    usedNames.add(localUniform.varName);
+  }
+
+  for (const texture of group1.textures) {
+    if (!isIdentifier(texture.varName) || !isIdentifier(texture.samplerName)) {
+      throw new Error(
+        `buildComputeShader: texture 이름이 유효하지 않습니다. (${texture.name})`
+      );
+    }
+    if (usedNames.has(texture.varName) || usedNames.has(texture.samplerName)) {
+      throw new Error(
+        `buildComputeShader: texture 이름 충돌이 있습니다. (${texture.varName})`
+      );
+    }
+    usedNames.add(texture.varName);
+    usedNames.add(texture.samplerName);
+  }
+
+  for (const storageTexture of group1.storageTextures ?? []) {
+    if (!isIdentifier(storageTexture.varName)) {
+      throw new Error(
+        `buildComputeShader: storageTexture 이름이 유효하지 않습니다. (${storageTexture.name})`
+      );
+    }
+    if (usedNames.has(storageTexture.varName)) {
+      throw new Error(
+        `buildComputeShader: storageTexture 이름 충돌이 있습니다. (${storageTexture.varName})`
+      );
+    }
+    usedNames.add(storageTexture.varName);
+  }
+
+  for (const storage of group1.storages) {
+    if (!isIdentifier(storage.varName)) {
+      throw new Error(
+        `buildComputeShader: storage 이름이 유효하지 않습니다. (${storage.name})`
+      );
+    }
+    if (usedNames.has(storage.varName)) {
+      throw new Error(
+        `buildComputeShader: storage 이름 충돌이 있습니다. (${storage.varName})`
+      );
+    }
+    usedNames.add(storage.varName);
+
+    if (storage.struct) {
+      if (!isIdentifier(storage.struct.name)) {
+        throw new Error(
+          `buildComputeShader: storage struct 이름이 유효하지 않습니다. (${storage.struct.name})`
+        );
+      }
+      if (usedNames.has(storage.struct.name)) {
+        throw new Error(
+          `buildComputeShader: storage struct 이름 충돌이 있습니다. (${storage.struct.name})`
+        );
+      }
+      usedNames.add(storage.struct.name);
+    }
+  }
+
+  for (const define of defines) {
+    if (usedNames.has(define.name)) {
+      throw new Error(
+        `buildComputeShader: define 이름 충돌이 있습니다. (${define.name})`
+      );
+    }
+    usedNames.add(define.name);
+  }
+
+  for (const include of includes) {
+    if (!isIdentifier(include)) {
+      throw new Error(
+        `buildComputeShader: include 이름이 잘못되었습니다. (${include})`
+      );
+    }
+  }
+}
+
+function createDispatchHelper(workgroupSize) {
+  const [wx, wy, wz] = workgroupSize;
+  const toWholeCount = (value, label) => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) {
+      throw new Error(`buildComputeShader.dispatch: ${label} 값이 유효하지 않습니다.`);
+    }
+    return Math.max(0, Math.floor(n));
+  };
+  const toWorkgroups = (size, wgSize) =>
+    Math.max(1, Math.ceil(toWholeCount(size, "size") / wgSize));
+
+  return {
+    for1D(count) {
+      return [toWorkgroups(count, wx), 1, 1];
+    },
+    for2D(width, height) {
+      return [toWorkgroups(width, wx), toWorkgroups(height, wy), 1];
+    },
+    for3D(x, y, z) {
+      return [toWorkgroups(x, wx), toWorkgroups(y, wy), toWorkgroups(z, wz)];
+    },
+  };
+}
+
 function composeCode(parts) {
   return parts
     .filter((part) => typeof part === "string" && part.trim())
@@ -726,6 +1091,90 @@ export function buildShader(config = {}) {
       group1,
       defines: defineSpecs,
     },
+  };
+}
+
+export function buildComputeShader(config = {}) {
+  const {
+    includes = [],
+    uniforms = null,
+    textures = [],
+    storageTextures = [],
+    storages = [],
+    defines = null,
+    workgroupSize = null,
+    entryPoint = "computeMain",
+    shader = "",
+    validate = false,
+  } = config;
+
+  if (typeof shader !== "string" || !shader.trim()) {
+    throw new Error("buildComputeShader: shader 문자열이 필요합니다.");
+  }
+  if (!isIdentifier(entryPoint)) {
+    throw new Error(
+      `buildComputeShader: entryPoint 이름이 잘못되었습니다. (${entryPoint})`
+    );
+  }
+
+  const normalizedWorkgroupSize = normalizeWorkgroupSize(workgroupSize);
+  const includeNames = asArray(includes);
+  const localUniform = normalizeUniforms(uniforms);
+  const normalizedTextures = normalizeTextures(textures);
+  const normalizedStorageTextures = normalizeStorageTextures(storageTextures);
+  const normalizedStorages = normalizeStorages(storages);
+  const { textureSpecs, storageSpecs } = applyIncludePresets(
+    includeNames,
+    normalizedTextures,
+    normalizedStorages
+  );
+  const defineSpecs = normalizeDefines(defines);
+  const group1 = buildComputeGroup1Contract(
+    localUniform,
+    textureSpecs,
+    normalizedStorageTextures,
+    storageSpecs
+  );
+
+  if (validate) {
+    validateComputeShader({
+      shader,
+      entryPoint,
+      localUniform,
+      group1,
+      defines: defineSpecs,
+      includes: includeNames,
+    });
+  }
+
+  const code = composeCode([
+    globalUniformWgsl,
+    buildLocalUniformCode(localUniform, group1),
+    buildTextureCode(group1),
+    buildStorageTextureCode(group1),
+    buildStorageCode(group1),
+    buildDefinesCode(defineSpecs),
+    buildIncludesCode(includeNames),
+    injectComputeEntrypointAttribute(shader, entryPoint, normalizedWorkgroupSize),
+  ]);
+
+  return {
+    code,
+    contract: {
+      stage: "compute",
+      entryPoint,
+      workgroupSize: normalizedWorkgroupSize,
+      group0: {
+        uniform: {
+          binding: 0,
+          varName: "global",
+          structName: "GlobalUniforms",
+        },
+      },
+      group1,
+      defines: defineSpecs,
+    },
+    dispatch: createDispatchHelper(normalizedWorkgroupSize),
   };
 }
 

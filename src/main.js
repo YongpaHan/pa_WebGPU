@@ -2,7 +2,7 @@ import "./style.css";
 import "reset-css";
 
 import { createCanvas } from "./webgpu/utils/canvas";
-import { runSketch } from "./sketches/260313/sketch";
+import { runSketch } from "./sketches/260316/sketch";
 
 const canvas = createCanvas();
 
