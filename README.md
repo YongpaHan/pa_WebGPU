@@ -1,4 +1,4 @@
-# 07_drawing
+# pa_WebGPU
 
 WebGPU 기반 드로잉/제너러티브 스케치 실험을 위한 Vite 프로젝트입니다.  
 이 저장소는 작은 렌더링 엔진 위에 스케치를 빠르게 올릴 수 있게 구성되어 있고, `RenderPass`와 `ComputePass`를 같은 프레임 루프에서 조합할 수 있습니다.
