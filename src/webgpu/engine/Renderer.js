@@ -28,9 +28,18 @@ export class Renderer {
 
   async init() {
     if (!navigator.gpu) {
-      alert(
-        "아쉽게도 WebGPU를 지원하는 환경이 아닙니다.\nSorry, your device doesn't support WebGPU",
-      );
+      const lang = navigator.language;
+      if (lang == "ko-KR") {
+        this._err(
+          "아쉽게도 WebGPU를 지원하는 환경이 아닙니다…",
+          "(; ·`д · ') 헉!",
+        );
+      } else {
+        this._err(
+          "Sorry, your device doesn't support WebGPU…",
+          "(; ·`д · ') Aww!",
+        );
+      }
       throw new Error("Renderer: WebGPU 지원 환경이 아닙니다.");
     }
     this.adapter = await navigator.gpu.requestAdapter();
@@ -264,5 +273,34 @@ export class Renderer {
     }
     this.textures.clear();
     this.isInitialized = false;
+  }
+
+  _err(msg, msg2) {
+    const errDiv = document.createElement("div");
+    const face = document.createElement("pre");
+    const errMessage = document.createElement("p");
+    errMessage.textContent = msg;
+    face.textContent = msg2;
+    errDiv.appendChild(face);
+    errDiv.appendChild(errMessage);
+    document.body.appendChild(errDiv);
+    errDiv.style.fontFamily = "sans-serif";
+    errDiv.style.position = "absolute";
+    errDiv.style.display = "flex";
+    errDiv.style.flexDirection = "column";
+    errDiv.style.gap = "1rem";
+    errDiv.style.justifyContent = "center";
+    errDiv.style.alignItems = "center";
+    errDiv.style.top = "50%";
+    errDiv.style.left = "50%";
+    errDiv.style.width = "max(75%, 200px)";
+    errDiv.style.minHeight = "3rem";
+    errDiv.style.transform = "translate(-50%, -50%)";
+    errDiv.style.border = "1px solid white";
+    errDiv.style.padding = "1rem";
+    face.style.color = "white";
+    errMessage.style.lineHeight = "1.5";
+    errMessage.style.wordBreak = "keep-all";
+    errMessage.style.color = "white";
   }
 }
