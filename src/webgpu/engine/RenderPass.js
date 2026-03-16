@@ -10,13 +10,51 @@ import {
   isStorageBlockLike,
   isGpuBufferLike,
   isPlainObject,
+  normalizeResourceCollectionInput,
+  normalizeResourceKey,
   normalizeStorageCollectionInput,
+  resolveByContract,
 } from "@/webgpu/engine/utils/resourceUtils";
 
 function getStorageBlockInstance(value) {
   if (isStorageBlockLike(value?.block)) return value.block;
   if (isStorageBlockLike(value)) return value;
   return null;
+}
+
+function parseTextureSlotKey(key) {
+  if (typeof key !== "string") return null;
+  const value = key.trim();
+  if (!value) return null;
+
+  const slotMatch = /^slot(\d+)$/.exec(value);
+  if (slotMatch) {
+    return Number(slotMatch[1]);
+  }
+
+  const numeric = Number(value);
+  if (Number.isInteger(numeric) && numeric >= 0) {
+    return numeric;
+  }
+
+  return null;
+}
+
+function normalizeTextureCollectionInput(textures) {
+  const normalized = normalizeResourceCollectionInput(textures);
+  const next = { ...normalized };
+
+  for (const [key, value] of Object.entries(normalized)) {
+    const slot = parseTextureSlotKey(key);
+    if (slot == null) continue;
+    const slotKey = `slot${slot}`;
+    const isNumericKey = !key.startsWith("slot");
+    if (!(slotKey in next) || isNumericKey) {
+      next[slotKey] = value;
+    }
+  }
+
+  return next;
 }
 
 function cloneArrayBufferView(value) {
@@ -199,7 +237,7 @@ export class RenderPass {
     this.pipelineCache = new Map();
     this.uniforms = null;
     this.pendingUniforms = {};
-    this.textures = textures;
+    this.textures = normalizeTextureCollectionInput(textures);
     this.storages = normalizeStorageCollectionInput(storages);
     this.shaderDataDefinitions = null;
     this.ownedStorageBlocks = new Set();
@@ -287,15 +325,15 @@ export class RenderPass {
     }
     const hasLocalResources = hasContractGroup1
       ? Boolean(
-        (contractGroup1.uniform ||
+          (contractGroup1.uniform ||
           (Array.isArray(contractGroup1.textures) &&
             contractGroup1.textures.length > 0) ||
           (Array.isArray(contractGroup1.storages) &&
             contractGroup1.storages.length > 0) ||
-          this._hasAnyStorageInput())
+            this._hasAnyStorageInput())
       )
       : Boolean(localStruct) ||
-        this.textures.length > 0 ||
+        this._hasAnyTextureInput() ||
         this._hasAnyStorageInput();
     if (hasLocalResources) {
       this._updateLocalBindGroup();
@@ -463,6 +501,16 @@ export class RenderPass {
       slot,
       value,
     }));
+  }
+
+  _normalizeTextures() {
+    this.textures = normalizeTextureCollectionInput(this.textures);
+    return this.textures;
+  }
+
+  _hasAnyTextureInput(collection = this.textures) {
+    const normalized = normalizeTextureCollectionInput(collection);
+    return Object.keys(normalized).length > 0;
   }
 
   _hasAnyStorageInput(collection = this.storages) {
@@ -658,7 +706,7 @@ export class RenderPass {
 
     //로컬 유니폼 여부에 따라 바인딩 슬롯을 할당
     const hasLocalUniform = Boolean(this.uniforms);
-    const textureCount = this.textures.length;
+    const textureEntries = this._getFallbackTextureEntries();
     const storages = this._getStorageBindingPlan();
     const plan = {
       source: "fallback",
@@ -669,11 +717,7 @@ export class RenderPass {
       textures: [],
       storages,
     };
-    for (let slot = 0; slot < textureCount; slot++) {
-      const resource = this.textures[slot];
-      if (!resource) {
-        throw new Error(`[${this.label}] textures[${slot}]가 비어 있습니다.`);
-      }
+    for (const { slot, resource } of textureEntries) {
       const textureBinding = plan.textureBaseBinding + slot * 2;
       plan.textures.push({
         slot,
@@ -709,17 +753,74 @@ export class RenderPass {
   }
 
   _resolveContractTextureResource(spec, slot) {
-    const bySlot = this.textures[slot] ?? null;
-    if (bySlot) return bySlot;
+    try {
+      return resolveByContract(spec, slot, {
+        localMap: this._normalizeTextures(),
+        renderer: this.renderer,
+        label: this.label,
+      });
+    } catch (_) {
+      const textureName = spec.name || spec.varName || `slot ${slot}`;
+      throw new Error(
+        `[${this.label}] shader.contract 텍스처 '${textureName}'를 찾을 수 없습니다. ` +
+          `renderer.createTexture('${textureName}', ...)를 addPass 전에 호출하거나 pass.textures[${slot}] 또는 pass.setTexture('${textureName}', texture)로 직접 설정하세요.`
+      );
+    }
+  }
 
-    const textureName = spec.name || spec.varName || `slot ${slot}`;
-    const byName = this.renderer?.getTexture?.(textureName) ?? null;
-    if (byName) return byName;
+  _resolveTextureInput(resource, keyLabel = null) {
+    if (typeof resource !== "string") return resource;
 
+    const resolved = this.renderer?.getTexture?.(resource) ?? null;
+    if (resolved) return resolved;
+
+    const label = keyLabel ? ` (${keyLabel})` : "";
     throw new Error(
-      `[${this.label}] shader.contract 텍스처 '${textureName}'를 찾을 수 없습니다. ` +
-        `renderer.createTexture('${textureName}', ...)를 addPass 전에 호출하거나 pass.textures[${slot}]를 직접 설정하세요.`
+      `[${this.label}] texture '${resource}'${label}를 찾을 수 없습니다. renderer.createTexture('${resource}', ...)를 먼저 호출하세요.`
     );
+  }
+
+  _getFallbackTextureEntries() {
+    const textureMap = this._normalizeTextures();
+    const slotMap = new Map();
+
+    for (const [key, value] of Object.entries(textureMap)) {
+      const slot = parseTextureSlotKey(key);
+      if (slot == null) continue;
+      const isCanonicalKey = key.startsWith("slot");
+      if (!slotMap.has(slot) || isCanonicalKey) {
+        slotMap.set(slot, value);
+      }
+    }
+
+    if (slotMap.size === 0) {
+      if (Object.keys(textureMap).length === 0) {
+        return [];
+      }
+      throw new Error(
+        `[${this.label}] contract 없는 RenderPass textures는 배열 또는 slot 기반 키(slot0, slot1, ...)여야 합니다.`
+      );
+    }
+
+    const maxSlot = Math.max(...slotMap.keys());
+    const entries = [];
+    for (let slot = 0; slot <= maxSlot; slot++) {
+      if (!slotMap.has(slot)) {
+        throw new Error(
+          `[${this.label}] textures 슬롯은 연속적이어야 합니다. slot${slot}가 비어 있습니다.`
+        );
+      }
+      const resource = slotMap.get(slot);
+      if (resource == null) {
+        throw new Error(`[${this.label}] textures[${slot}]가 비어 있습니다.`);
+      }
+      entries.push({
+        slot,
+        resource: this._resolveTextureInput(resource, `slot${slot}`),
+      });
+    }
+
+    return entries;
   }
 
   _getTextureBindingKey(resource) {
@@ -913,7 +1014,7 @@ export class RenderPass {
     const group1 = this.shaderContract?.group1;
     const shouldCheck =
       Boolean(this.uniforms) ||
-      this.textures.length > 0 ||
+      this._hasAnyTextureInput() ||
       this._hasAnyStorageInput() ||
       Boolean(group1?.uniform) ||
       (Array.isArray(group1?.textures) && group1.textures.length > 0) ||
@@ -1075,6 +1176,26 @@ export class RenderPass {
       return;
     }
     this.uniforms.set(values);
+  }
+
+  setTexture(nameOrSlot, texture) {
+    const key = normalizeResourceKey(nameOrSlot, `${this.label}.setTexture`);
+    if (texture == null) {
+      delete this.textures[key];
+    } else {
+      this.textures[key] = texture;
+    }
+
+    this._normalizeTextures();
+    if (this.isInitialized) {
+      this._syncLocalBindGroup();
+    }
+  }
+
+  setTextures(textures = {}) {
+    this.textures = normalizeTextureCollectionInput(textures);
+    if (!this.isInitialized) return;
+    this._syncLocalBindGroup();
   }
 
   _getContractStorageSpec(name) {
@@ -1363,6 +1484,7 @@ export class RenderPass {
     this.shaderContract = null;
     this.shaderDataDefinitions = null;
     this.pendingUniforms = {};
+    this.textures = {};
     this.storages = [];
     this.localBindGroupLayout = null;
     this.localBindGroup = null;
