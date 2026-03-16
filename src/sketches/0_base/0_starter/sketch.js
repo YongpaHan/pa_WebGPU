@@ -1,6 +1,6 @@
-import { Renderer } from "../../../webgpu/engine/Renderer";
-import { createGesture } from "../../../webgpu/utils/gesture";
-import { createTimer } from "../../../webgpu/utils/timer";
+import { Renderer } from "@/webgpu/engine/Renderer";
+import { createGesture } from "@/webgpu/utils/gesture";
+import { createTimer } from "@/webgpu/utils/timer";
 import { createPass } from "./passes/pass";
 import { shader } from "./shaders/shader";
 

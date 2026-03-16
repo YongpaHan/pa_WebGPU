@@ -1,4 +1,4 @@
-import { includeLibrary } from "../../shaders/global/function.wgsl";
+import { includeLibrary } from "@/webgpu/shaders/global/function.wgsl";
 
 function asArray(value) {
   if (!value) return [];

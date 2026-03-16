@@ -1,8 +1,8 @@
-import "./style.css";
+import "@/style.css";
 import "reset-css";
 
-import { createCanvas } from "./webgpu/utils/canvas";
-import { runSketch } from "./sketches/260316/sketch";
+import { createCanvas } from "@/webgpu/utils/canvas";
+import { runSketch } from "@/sketches/260316/sketch";
 
 const canvas = createCanvas();
 

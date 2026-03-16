@@ -1,4 +1,4 @@
-import gestureCore, { doubleClick, pan, rotate, zoom } from "../lib/gesture";
+import gestureCore, { doubleClick, pan, rotate, zoom } from "@/webgpu/lib/gesture";
 
 function touchVec4(touch) {
   return [touch?.x ?? 0, touch?.y ?? 0, touch?.active ?? 0, 0];

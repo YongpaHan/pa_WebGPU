@@ -1,5 +1,5 @@
 import { makeShaderDataDefinitions } from "webgpu-utils";
-import { UniformBlock } from "./uniforms/UniformBlock";
+import { UniformBlock } from "@/webgpu/engine/uniforms/UniformBlock";
 
 const resourceIdentityMap = new WeakMap();
 let nextResourceIdentityId = 1;

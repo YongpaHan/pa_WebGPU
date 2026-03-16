@@ -1,5 +1,5 @@
-import { resolveIncludes } from "./Include";
-import { globalUniformWgsl } from "../../shaders/global/globalUniform.wgsl";
+import { resolveIncludes } from "@/webgpu/engine/shaders/Include";
+import { globalUniformWgsl } from "@/webgpu/shaders/global/globalUniform.wgsl";
 import {
   msdfAtlasTextureName,
   msdfGlyphsStorageName,

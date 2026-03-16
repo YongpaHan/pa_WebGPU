@@ -2,9 +2,9 @@ import {
   getSizeAndAlignmentOfUnsizedArrayElement,
   makeShaderDataDefinitions,
 } from "webgpu-utils";
-import { UniformBlock } from "./uniforms/UniformBlock";
-import { Geometry } from "./Geometry";
-import { StorageBlock } from "./uniforms/StorageBlock";
+import { UniformBlock } from "@/webgpu/engine/uniforms/UniformBlock";
+import { Geometry } from "@/webgpu/engine/Geometry";
+import { StorageBlock } from "@/webgpu/engine/uniforms/StorageBlock";
 
 const resourceIdentityMap = new WeakMap();
 let nextResourceIdentityId = 1;

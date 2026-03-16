@@ -1,6 +1,6 @@
 import { makeShaderDataDefinitions } from "webgpu-utils";
-import { UniformBlock } from "./UniformBlock";
-import { globalUniformWgsl } from "../../shaders/global/globalUniform.wgsl";
+import { UniformBlock } from "@/webgpu/engine/uniforms/UniformBlock";
+import { globalUniformWgsl } from "@/webgpu/shaders/global/globalUniform.wgsl";
 
 export class GlobalUniformBlock {
   constructor({ device } = {}) {

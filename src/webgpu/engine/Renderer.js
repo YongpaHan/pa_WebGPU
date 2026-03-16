@@ -1,5 +1,5 @@
-import { GlobalUniformBlock } from "./uniforms/GlobalUniformBlock";
-import { TextureResource } from "./TextureResource";
+import { GlobalUniformBlock } from "@/webgpu/engine/uniforms/GlobalUniformBlock";
+import { TextureResource } from "@/webgpu/engine/TextureResource";
 
 export class Renderer {
   constructor({

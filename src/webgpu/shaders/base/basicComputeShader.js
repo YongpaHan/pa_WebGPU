@@ -1,4 +1,4 @@
-import { buildComputeShader } from "../../engine/shaders/ShaderBuilder";
+import { buildComputeShader } from "@/webgpu/engine/shaders/ShaderBuilder";
 
 // Copy this file when starting a new compute shader and edit only this object.
 // - global uniform is always available as `global`

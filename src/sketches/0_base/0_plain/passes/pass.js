@@ -1,4 +1,4 @@
-import { RenderPass } from "../../../../webgpu/engine/RenderPass";
+import { RenderPass } from "@/webgpu/engine/RenderPass";
 
 export function createPass({ shader = null, shaderCode = null } = {}) {
   const positions = new Float32Array([-1, -1, 1, -1, 1, 1, -1, 1]);
