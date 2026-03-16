@@ -27,13 +27,18 @@ export class Renderer {
   }
 
   async init() {
-    if (!navigator.gpu) throw new Error("WebGPU 이용 제한 환경");
+    if (!navigator.gpu) {
+      alert(
+        "아쉽게도 WebGPU를 지원하는 환경이 아닙니다.\nSorry, your device doesn't support WebGPU",
+      );
+      throw new Error("Renderer: WebGPU 지원 환경이 아닙니다.");
+    }
     this.adapter = await navigator.gpu.requestAdapter();
-    if (!this.adapter) throw new Error("adapter 요청 실패");
+    if (!this.adapter) throw new Error("Renderer: adapter 요청 실패");
     this.device = await this.adapter.requestDevice();
-    if (!this.device) throw new Error("device 요청 실패");
+    if (!this.device) throw new Error("Renderer: device 요청 실패");
     this.ctx = this.canvas.getContext("webgpu");
-    if (!this.ctx) throw new Error("webgpu context 생성 실패");
+    if (!this.ctx) throw new Error("Renderer: webgpu context 생성 실패");
     this.format = navigator.gpu.getPreferredCanvasFormat();
 
     this.ctx.configure({
@@ -104,7 +109,7 @@ export class Renderer {
     const inferredAutoResize = !hasSource && !hasWidthInput && !hasHeightInput;
     const autoResize = hasSource
       ? false
-      : options.autoResize ?? inferredAutoResize;
+      : (options.autoResize ?? inferredAutoResize);
     resource.setAutoResize(autoResize);
 
     this.textures.set(name, resource);
