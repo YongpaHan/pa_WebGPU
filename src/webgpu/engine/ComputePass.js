@@ -1,100 +1,43 @@
 import { makeShaderDataDefinitions } from "webgpu-utils";
 import { UniformBlock } from "@/webgpu/engine/uniforms/UniformBlock";
-
-const resourceIdentityMap = new WeakMap();
-let nextResourceIdentityId = 1;
-
-function getResourceIdentity(value) {
-  if (!value || (typeof value !== "object" && typeof value !== "function")) {
-    return String(value);
-  }
-  if (!resourceIdentityMap.has(value)) {
-    resourceIdentityMap.set(value, nextResourceIdentityId++);
-  }
-  return String(resourceIdentityMap.get(value));
-}
-
-function isStorageBlockLike(value) {
-  return Boolean(
-    value &&
-      typeof value === "object" &&
-      typeof value.getLayoutEntry === "function" &&
-      typeof value.getBindResource === "function"
-  );
-}
-
-function isGpuBufferLike(value) {
-  return Boolean(
-    value &&
-      typeof value === "object" &&
-      typeof value.destroy === "function" &&
-      typeof value.size === "number"
-  );
-}
-
-function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function isStorageBindingSpecLike(value) {
-  if (!isPlainObject(value)) return false;
-
-  return Boolean(
-    value.block ||
-      value.buffer ||
-      value.resource ||
-      Number.isInteger(value.binding) ||
-      typeof value.upload === "function" ||
-      value.bindingKey != null ||
-      value.visibility != null ||
-      value.bufferType != null
-  );
-}
-
-function normalizeResourceCollectionInput(resources) {
-  if (resources == null) return {};
-  if (Array.isArray(resources)) {
-    return resources.reduce((acc, resource, slot) => {
-      acc[`slot${slot}`] = resource;
-      return acc;
-    }, {});
-  }
-  if (isPlainObject(resources)) {
-    return { ...resources };
-  }
-  return { slot0: resources };
-}
-
-function normalizeStorageCollectionInput(storages) {
-  if (storages == null) return [];
-  if (Array.isArray(storages)) return storages;
-  if (
-    isStorageBlockLike(storages) ||
-    isGpuBufferLike(storages) ||
-    isStorageBindingSpecLike(storages)
-  ) {
-    return [storages];
-  }
-  if (isPlainObject(storages)) {
-    return { ...storages };
-  }
-  return [storages];
-}
-
-function normalizeResourceKey(nameOrSlot, label) {
-  if (Number.isInteger(nameOrSlot) && nameOrSlot >= 0) {
-    return `slot${nameOrSlot}`;
-  }
-  if (typeof nameOrSlot === "string" && nameOrSlot.trim()) {
-    return nameOrSlot.trim();
-  }
-  throw new Error(`[${label}] resource key는 문자열 또는 0 이상의 정수여야 합니다.`);
-}
+import {
+  getResourceIdentity,
+  isStorageBlockLike,
+  isGpuBufferLike,
+  isPlainObject,
+  normalizeResourceCollectionInput,
+  normalizeStorageCollectionInput,
+  normalizeResourceKey,
+  resolveByContract,
+} from "@/webgpu/engine/utils/resourceUtils";
 
 function toStorageTextureLayoutAccess(access = "write") {
   if (access === "read") return "read-only";
   if (access === "read_write") return "read-write";
   return "write-only";
+}
+
+function toStorageNamedMap(input) {
+  const normalized = normalizeStorageCollectionInput(input);
+  if (!Array.isArray(normalized)) return { ...normalized };
+
+  const result = {};
+  for (let i = 0; i < normalized.length; i++) {
+    const value = normalized[i];
+    const block = isStorageBlockLike(value?.block)
+      ? value.block
+      : isStorageBlockLike(value)
+        ? value
+        : null;
+    const key =
+      value?.name ??
+      value?.storageName ??
+      block?.name ??
+      block?.label ??
+      `slot${i}`;
+    result[key] = value;
+  }
+  return result;
 }
 
 export class ComputePass {
@@ -126,7 +69,7 @@ export class ComputePass {
 
     this.textures = normalizeResourceCollectionInput(textures);
     this.storageTextures = normalizeResourceCollectionInput(storageTextures);
-    this.storages = normalizeStorageCollectionInput(storages);
+    this.storages = toStorageNamedMap(storages);
 
     this.device = null;
     this.renderer = null;
@@ -229,6 +172,8 @@ export class ComputePass {
     this.isInitialized = true;
   }
 
+  // --- Pipeline ---
+
   _createPipeline() {
     if (!this.pipelineLayout || !this.shaderModule) {
       throw new Error(
@@ -277,88 +222,25 @@ export class ComputePass {
     this.pipeline = null;
   }
 
-  _resolveTextureByName(name) {
-    if (!name) return null;
-    return this.textures[name] ?? null;
-  }
-
-  _resolveTextureBySlot(slot) {
-    return this.textures[`slot${slot}`] ?? null;
-  }
-
-  _resolveStorageTextureByName(name) {
-    if (!name) return null;
-    return this.storageTextures[name] ?? null;
-  }
-
-  _resolveStorageTextureBySlot(slot) {
-    return this.storageTextures[`slot${slot}`] ?? null;
-  }
-
-  _resolveTextureResource(value) {
-    if (typeof value === "string") {
-      return this.renderer?.getTexture?.(value) ?? null;
-    }
-    return value ?? null;
-  }
+  // --- Resource resolution ---
 
   _resolveContractTextureResource(spec, slot) {
-    const byName = this._resolveTextureResource(this._resolveTextureByName(spec.name));
-    if (byName) return byName;
-
-    const byVarName = this._resolveTextureResource(
-      this._resolveTextureByName(spec.varName)
-    );
-    if (byVarName) return byVarName;
-
-    const bySlot = this._resolveTextureResource(this._resolveTextureBySlot(slot));
-    if (bySlot) return bySlot;
-
-    const fromRendererName = spec.name
-      ? this.renderer?.getTexture?.(spec.name) ?? null
-      : null;
-    if (fromRendererName) return fromRendererName;
-
-    const fromRendererVarName = spec.varName
-      ? this.renderer?.getTexture?.(spec.varName) ?? null
-      : null;
-    if (fromRendererVarName) return fromRendererVarName;
-
-    throw new Error(
-      `[${this.label}] shader.contract 텍스처 '${spec.name ?? spec.varName ?? slot}'를 찾을 수 없습니다.`
-    );
+    return resolveByContract(spec, slot, {
+      localMap: this.textures,
+      renderer: this.renderer,
+      label: this.label,
+    });
   }
 
   _resolveContractStorageTextureResource(spec, slot) {
-    const byName = this._resolveTextureResource(
-      this._resolveStorageTextureByName(spec.name)
-    );
-    if (byName) return byName;
-
-    const byVarName = this._resolveTextureResource(
-      this._resolveStorageTextureByName(spec.varName)
-    );
-    if (byVarName) return byVarName;
-
-    const bySlot = this._resolveTextureResource(
-      this._resolveStorageTextureBySlot(slot)
-    );
-    if (bySlot) return bySlot;
-
-    const fromRendererName = spec.name
-      ? this.renderer?.getTexture?.(spec.name) ?? null
-      : null;
-    if (fromRendererName) return fromRendererName;
-
-    const fromRendererVarName = spec.varName
-      ? this.renderer?.getTexture?.(spec.varName) ?? null
-      : null;
-    if (fromRendererVarName) return fromRendererVarName;
-
-    throw new Error(
-      `[${this.label}] shader.contract storage texture '${spec.name ?? spec.varName ?? slot}'를 찾을 수 없습니다.`
-    );
+    return resolveByContract(spec, slot, {
+      localMap: this.storageTextures,
+      renderer: this.renderer,
+      label: this.label,
+    });
   }
+
+  // --- Binding keys ---
 
   _getTextureBindingKey(resource) {
     if (!resource) return "missing";
@@ -387,128 +269,64 @@ export class ComputePass {
       .trim();
   }
 
-  _getStorageEntries(collection = this.storages) {
-    if (Array.isArray(collection)) {
-      return collection.map((value, slot) => ({
-        key: null,
-        slot,
-        value,
-      }));
-    }
-    if (!isPlainObject(collection)) return [];
-
-    return Object.entries(collection).map(([key, value], slot) => ({
-      key,
-      slot,
-      value,
-    }));
-  }
-
-  _hasAnyStorageInput(collection = this.storages) {
-    return this._getStorageEntries(collection).length > 0;
-  }
-
-  _matchesStorageName(value, name, key = null) {
-    if (!name) return false;
-    if (key === name) return true;
-    if (!value || typeof value !== "object") return false;
-    if (value.name === name) return true;
-    if (value.storageName === name) return true;
-    if (value.label === name) return true;
-
-    const block = isStorageBlockLike(value?.block)
-      ? value.block
-      : isStorageBlockLike(value)
-        ? value
-        : null;
-
-    if (!block) return false;
-    if (block.name === name) return true;
-    if (block.label === name) return true;
-    return false;
-  }
-
-  _findStorageEntryByName(name, collection = this.storages) {
-    return (
-      this._getStorageEntries(collection).find((entry) =>
-        this._matchesStorageName(entry.value, name, entry.key)
-      ) ?? null
-    );
-  }
-
-  _findStorageEntryBySlot(slot, collection = this.storages) {
-    return this._getStorageEntries(collection)[slot] ?? null;
-  }
-
-  _getStorageValueByName(name, collection = this.storages) {
-    return this._findStorageEntryByName(name, collection)?.value ?? null;
-  }
-
-  _cloneStorageCollectionAsNamedMap(collection = this.storages) {
-    const next = {};
-    for (const { key, slot, value } of this._getStorageEntries(collection)) {
-      const block = isStorageBlockLike(value?.block)
-        ? value.block
-        : isStorageBlockLike(value)
-          ? value
-          : null;
-      const fallbackKey =
-        key ??
-        value?.name ??
-        value?.storageName ??
-        block?.name ??
-        block?.label ??
-        `slot${slot}`;
-      next[fallbackKey] = value;
-    }
-    return next;
-  }
-
-  _toNamedStorageBindingSpec(value, key = null) {
-    if (key == null || value == null) return value;
-    if (isStorageBlockLike(value)) {
-      return {
-        name: key,
-        storageName: key,
-        block: value,
-      };
-    }
-    if (isGpuBufferLike(value)) {
-      return {
-        name: key,
-        storageName: key,
-        buffer: value,
-      };
-    }
-    if (!isPlainObject(value)) return value;
-
-    return {
-      ...value,
-      name: value.name ?? key,
-      storageName: value.storageName ?? key,
-    };
-  }
-
   _getStorageBindingKey(resource) {
     const buffer = resource?.buffer ?? null;
     return [getResourceIdentity(buffer), buffer?.size ?? "0"].join(":");
   }
 
+  // --- Storage lookup ---
+
+  _findStorageByName(name) {
+    if (!name) return null;
+    if (name in this.storages) return this.storages[name];
+    for (const value of Object.values(this.storages)) {
+      if (!value || typeof value !== "object") continue;
+      if (value.name === name || value.storageName === name || value.label === name)
+        return value;
+      const block = isStorageBlockLike(value?.block)
+        ? value.block
+        : isStorageBlockLike(value)
+          ? value
+          : null;
+      if (block && (block.name === name || block.label === name)) return value;
+    }
+    return null;
+  }
+
   _resolveContractStorageResource(spec, slot) {
     const storageName = spec.name || spec.varName || `slot${slot}`;
-    const byName = this._getStorageValueByName(storageName);
+    const byName = this._findStorageByName(storageName);
     if (byName) return byName;
 
-    const byVarName =
-      storageName !== spec.varName ? this._getStorageValueByName(spec.varName) : null;
-    if (byVarName) return byVarName;
+    if (storageName !== spec.varName) {
+      const byVarName = this._findStorageByName(spec.varName);
+      if (byVarName) return byVarName;
+    }
 
-    const bySlot = this._findStorageEntryBySlot(slot)?.value ?? null;
-    if (bySlot) return bySlot;
+    const values = Object.values(this.storages);
+    if (slot < values.length) return values[slot];
 
     throw new Error(
       `[${this.label}] shader.contract storage '${storageName}'를 찾을 수 없습니다.`
     );
+  }
+
+  // --- Storage binding normalization ---
+
+  _toNamedStorageBindingSpec(value, key) {
+    if (key == null || value == null) return value;
+    if (isStorageBlockLike(value)) {
+      return { name: key, storageName: key, block: value };
+    }
+    if (isGpuBufferLike(value)) {
+      return { name: key, storageName: key, buffer: value };
+    }
+    if (!isPlainObject(value)) return value;
+    return {
+      ...value,
+      name: value.name ?? key,
+      storageName: value.storageName ?? key,
+    };
   }
 
   _normalizeStorageBinding(spec, slot) {
@@ -620,6 +438,81 @@ export class ComputePass {
     };
   }
 
+  // --- Binding plan builders ---
+
+  _buildUniformPlan(group1) {
+    const hasLocalUniform = Boolean(group1.uniform);
+    if (hasLocalUniform && !this.uniforms) {
+      throw new Error(
+        `[${this.label}] shader.contract.group1.uniform이 선언됐지만 local uniform을 생성할 수 없습니다.`
+      );
+    }
+    return {
+      hasLocalUniform,
+      binding: hasLocalUniform
+        ? Number.isInteger(group1.uniform?.binding)
+          ? group1.uniform.binding
+          : 0
+        : null,
+      visibility: group1.uniform?.visibility ?? GPUShaderStage.COMPUTE,
+    };
+  }
+
+  _buildTexturePlan(group1) {
+    return (Array.isArray(group1.textures) ? group1.textures : []).map(
+      (spec, slot) => {
+        const resource = this._resolveContractTextureResource(spec, slot);
+        if (
+          typeof resource?.getTextureView !== "function" ||
+          typeof resource?.getSampler !== "function"
+        ) {
+          throw new Error(
+            `[${this.label}] texture '${spec.name ?? spec.varName ?? slot}'는 TextureResource 형태여야 합니다.`
+          );
+        }
+        return {
+          slot,
+          name: spec.name ?? `texture${slot}`,
+          varName: spec.varName ?? spec.as ?? spec.name ?? `texture${slot}`,
+          textureBinding: spec.textureBinding,
+          samplerBinding: spec.samplerBinding,
+          sampleType: spec.sampleType ?? "float",
+          viewDimension: spec.viewDimension ?? "2d",
+          multisampled: Boolean(spec.multisampled),
+          samplerType:
+            spec.samplerType ??
+            (spec.sampleType === "float" ? "filtering" : "non-filtering"),
+          resource,
+        };
+      }
+    );
+  }
+
+  _buildStorageTexturePlan(group1) {
+    return (
+      Array.isArray(group1.storageTextures) ? group1.storageTextures : []
+    ).map((spec, slot) => {
+      const resource = this._resolveContractStorageTextureResource(spec, slot);
+      if (typeof resource?.getTextureView !== "function") {
+        throw new Error(
+          `[${this.label}] storage texture '${spec.name ?? spec.varName ?? slot}'는 TextureResource 형태여야 합니다.`
+        );
+      }
+
+      return {
+        slot,
+        name: spec.name ?? `storageTexture${slot}`,
+        varName:
+          spec.varName ?? spec.as ?? spec.name ?? `storageTexture${slot}`,
+        binding: spec.binding,
+        access: spec.access ?? "write",
+        format: spec.format ?? "rgba8unorm",
+        viewDimension: spec.viewDimension ?? "2d",
+        resource,
+      };
+    });
+  }
+
   _getStorageBindingPlan(contractSpecs = null) {
     if (Array.isArray(contractSpecs)) {
       return contractSpecs.map((spec, slot) =>
@@ -627,118 +520,61 @@ export class ComputePass {
       );
     }
 
-    const entries = this._getStorageEntries();
-    if (entries.length === 0) {
-      return [];
-    }
+    const entries = Object.entries(this.storages);
+    if (entries.length === 0) return [];
 
-    return entries.map(({ key, value, slot }) =>
+    return entries.map(([key, value], slot) =>
       this._normalizeStorageBinding(this._toNamedStorageBindingSpec(value, key), slot)
     );
+  }
+
+  // --- Local binding plan ---
+
+  _buildLayoutKey(plan) {
+    return JSON.stringify({
+      source: plan.source,
+      u: [plan.hasLocalUniform, plan.uniformBinding, plan.uniformVisibility],
+      t: plan.textures.map((x) => [
+        x.textureBinding,
+        x.samplerBinding,
+        x.sampleType,
+        x.viewDimension,
+        x.multisampled,
+        x.samplerType,
+      ]),
+      st: plan.storageTextures.map((x) => [
+        x.binding,
+        x.access,
+        x.format,
+        x.viewDimension,
+      ]),
+      s: plan.storages.map((x) => [x.binding, x.visibility, x.bufferType]),
+    });
   }
 
   _getLocalBindingPlan() {
     const group1 = this.shaderContract?.group1;
     if (group1 && typeof group1 === "object") {
-      const hasLocalUniform = Boolean(group1.uniform);
-      if (hasLocalUniform && !this.uniforms) {
-        throw new Error(
-          `[${this.label}] shader.contract.group1.uniform이 선언됐지만 local uniform을 생성할 수 없습니다.`
-        );
-      }
-
-      const textures = (Array.isArray(group1.textures) ? group1.textures : []).map(
-        (spec, slot) => {
-          const resource = this._resolveContractTextureResource(spec, slot);
-          if (
-            typeof resource?.getTextureView !== "function" ||
-            typeof resource?.getSampler !== "function"
-          ) {
-            throw new Error(
-              `[${this.label}] texture '${spec.name ?? spec.varName ?? slot}'는 TextureResource 형태여야 합니다.`
-            );
-          }
-          return {
-            slot,
-            name: spec.name ?? `texture${slot}`,
-            varName: spec.varName ?? spec.as ?? spec.name ?? `texture${slot}`,
-            textureBinding: spec.textureBinding,
-            samplerBinding: spec.samplerBinding,
-            sampleType: spec.sampleType ?? "float",
-            viewDimension: spec.viewDimension ?? "2d",
-            multisampled: Boolean(spec.multisampled),
-            samplerType:
-              spec.samplerType ??
-              (spec.sampleType === "float" ? "filtering" : "non-filtering"),
-            resource,
-          };
-        }
-      );
-
-      const storageTextures = (
-        Array.isArray(group1.storageTextures) ? group1.storageTextures : []
-      ).map((spec, slot) => {
-        const resource = this._resolveContractStorageTextureResource(spec, slot);
-        if (typeof resource?.getTextureView !== "function") {
-          throw new Error(
-            `[${this.label}] storage texture '${spec.name ?? spec.varName ?? slot}'는 TextureResource 형태여야 합니다.`
-          );
-        }
-
-        return {
-          slot,
-          name: spec.name ?? `storageTexture${slot}`,
-          varName:
-            spec.varName ?? spec.as ?? spec.name ?? `storageTexture${slot}`,
-          binding: spec.binding,
-          access: spec.access ?? "write",
-          format: spec.format ?? "rgba8unorm",
-          viewDimension: spec.viewDimension ?? "2d",
-          resource,
-        };
-      });
-
+      const uniform = this._buildUniformPlan(group1);
+      const textures = this._buildTexturePlan(group1);
+      const storageTextures = this._buildStorageTexturePlan(group1);
       const storages = this._getStorageBindingPlan(group1.storages);
-      const uniformBinding = hasLocalUniform
-        ? Number.isInteger(group1.uniform?.binding)
-          ? group1.uniform.binding
-          : 0
-        : null;
 
       const plan = {
         source: "contract",
-        hasLocalUniform,
-        uniformBinding,
-        uniformVisibility: group1.uniform?.visibility ?? GPUShaderStage.COMPUTE,
+        hasLocalUniform: uniform.hasLocalUniform,
+        uniformBinding: uniform.binding,
+        uniformVisibility: uniform.visibility,
         textures,
         storageTextures,
         storages,
+        hasAnyLocalResource:
+          uniform.hasLocalUniform ||
+          textures.length > 0 ||
+          storageTextures.length > 0 ||
+          storages.length > 0,
       };
-
-      plan.hasAnyLocalResource =
-        hasLocalUniform ||
-        textures.length > 0 ||
-        storageTextures.length > 0 ||
-        storages.length > 0;
-      plan.layoutKey = JSON.stringify({
-        source: plan.source,
-        u: [plan.hasLocalUniform, plan.uniformBinding, plan.uniformVisibility],
-        t: textures.map((x) => [
-          x.textureBinding,
-          x.samplerBinding,
-          x.sampleType,
-          x.viewDimension,
-          x.multisampled,
-          x.samplerType,
-        ]),
-        st: storageTextures.map((x) => [
-          x.binding,
-          x.access,
-          x.format,
-          x.viewDimension,
-        ]),
-        s: storages.map((x) => [x.binding, x.visibility, x.bufferType]),
-      });
+      plan.layoutKey = this._buildLayoutKey(plan);
 
       this._validateLocalBindingPlan(plan);
       return plan;
@@ -747,7 +583,7 @@ export class ComputePass {
     const hasExternalLocalResources =
       Object.keys(this.textures).length > 0 ||
       Object.keys(this.storageTextures).length > 0 ||
-      this._hasAnyStorageInput();
+      Object.keys(this.storages).length > 0;
 
     if (hasExternalLocalResources) {
       throw new Error(
@@ -766,13 +602,7 @@ export class ComputePass {
       storages: [],
       hasAnyLocalResource: hasLocalUniform,
     };
-    plan.layoutKey = JSON.stringify({
-      source: plan.source,
-      u: [plan.hasLocalUniform, plan.uniformBinding, plan.uniformVisibility],
-      t: [],
-      st: [],
-      s: [],
-    });
+    plan.layoutKey = this._buildLayoutKey(plan);
 
     this._validateLocalBindingPlan(plan);
     return plan;
@@ -799,13 +629,15 @@ export class ComputePass {
     return [textureKey, storageTextureKey, storageKey].filter(Boolean).join("||");
   }
 
+  // --- Bind group sync ---
+
   _syncLocalBindGroup() {
     const group1 = this.shaderContract?.group1;
     const shouldCheck =
       Boolean(this.uniforms) ||
       Object.keys(this.textures).length > 0 ||
       Object.keys(this.storageTextures).length > 0 ||
-      this._hasAnyStorageInput() ||
+      Object.keys(this.storages).length > 0 ||
       Boolean(group1?.uniform) ||
       (Array.isArray(group1?.textures) && group1.textures.length > 0) ||
       (Array.isArray(group1?.storageTextures) &&
@@ -975,6 +807,8 @@ export class ComputePass {
     }
   }
 
+  // --- Workgroups ---
+
   _normalizeWorkgroups(workgroups) {
     const value = Array.isArray(workgroups)
       ? workgroups
@@ -1017,6 +851,8 @@ export class ComputePass {
     }
     return [1, 1, 1];
   }
+
+  // --- Public API ---
 
   encode(commandEncoder) {
     this._syncLocalBindGroup();
@@ -1115,9 +951,7 @@ export class ComputePass {
       return;
     }
 
-    const nextStorages = this._cloneStorageCollectionAsNamedMap();
-    nextStorages[name] = storage;
-    this.storages = nextStorages;
+    this.storages = { ...this.storages, [name]: storage };
 
     if (this.isInitialized) {
       this._syncLocalBindGroup();
@@ -1125,7 +959,7 @@ export class ComputePass {
   }
 
   setStorages(storages = []) {
-    this.storages = normalizeStorageCollectionInput(storages);
+    this.storages = toStorageNamedMap(storages);
     if (!this.isInitialized) return;
     this._syncLocalBindGroup();
   }
@@ -1135,16 +969,25 @@ export class ComputePass {
       throw new Error(`[${this.label}] clearStorage(name): 이름 문자열이 필요합니다.`);
     }
 
-    const entry = this._findStorageEntryByName(name);
-    if (!entry) return false;
-
-    if (Array.isArray(this.storages)) {
-      const next = [...this.storages];
-      next.splice(entry.slot, 1);
+    if (!(name in this.storages)) {
+      const found = Object.entries(this.storages).find(([, value]) => {
+        if (!value || typeof value !== "object") return false;
+        if (value.name === name || value.storageName === name || value.label === name)
+          return true;
+        const block = isStorageBlockLike(value?.block)
+          ? value.block
+          : isStorageBlockLike(value)
+            ? value
+            : null;
+        return block && (block.name === name || block.label === name);
+      });
+      if (!found) return false;
+      const next = { ...this.storages };
+      delete next[found[0]];
       this.storages = next;
     } else {
       const next = { ...this.storages };
-      delete next[entry.key];
+      delete next[name];
       this.storages = next;
     }
 
@@ -1181,7 +1024,7 @@ export class ComputePass {
 
     this.textures = {};
     this.storageTextures = {};
-    this.storages = [];
+    this.storages = {};
 
     this.globalUniforms = null;
     this.renderer = null;

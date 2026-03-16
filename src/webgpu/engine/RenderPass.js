@@ -5,72 +5,13 @@ import {
 import { UniformBlock } from "@/webgpu/engine/uniforms/UniformBlock";
 import { Geometry } from "@/webgpu/engine/Geometry";
 import { StorageBlock } from "@/webgpu/engine/uniforms/StorageBlock";
-
-const resourceIdentityMap = new WeakMap();
-let nextResourceIdentityId = 1;
-
-function getResourceIdentity(value) {
-  if (!value || (typeof value !== "object" && typeof value !== "function")) {
-    return String(value);
-  }
-  if (!resourceIdentityMap.has(value)) {
-    resourceIdentityMap.set(value, nextResourceIdentityId++);
-  }
-  return String(resourceIdentityMap.get(value));
-}
-
-function isStorageBlockLike(value) {
-  return Boolean(
-    value &&
-      typeof value === "object" &&
-      typeof value.getLayoutEntry === "function" &&
-      typeof value.getBindResource === "function"
-  );
-}
-
-function isGpuBufferLike(value) {
-  return Boolean(
-    value &&
-      typeof value === "object" &&
-      typeof value.destroy === "function" &&
-      typeof value.size === "number"
-  );
-}
-
-function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function isStorageBindingSpecLike(value) {
-  if (!isPlainObject(value)) return false;
-
-  return Boolean(
-    value.block ||
-      value.buffer ||
-      value.resource ||
-      Number.isInteger(value.binding) ||
-      typeof value.upload === "function" ||
-      value.bindingKey != null ||
-      value.visibility != null ||
-      value.bufferType != null
-  );
-}
-
-function normalizeStorageCollectionInput(storages) {
-  if (storages == null) return [];
-  if (Array.isArray(storages)) return storages;
-  if (
-    isStorageBlockLike(storages) ||
-    isGpuBufferLike(storages) ||
-    isStorageBindingSpecLike(storages)
-  ) {
-    return [storages];
-  }
-  if (isPlainObject(storages)) {
-    return { ...storages };
-  }
-  return [storages];
-}
+import {
+  getResourceIdentity,
+  isStorageBlockLike,
+  isGpuBufferLike,
+  isPlainObject,
+  normalizeStorageCollectionInput,
+} from "@/webgpu/engine/utils/resourceUtils";
 
 function getStorageBlockInstance(value) {
   if (isStorageBlockLike(value?.block)) return value.block;
