@@ -20,6 +20,45 @@ export const includeLibrary = {
         fn mod_vec2(x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
           return x - y * floor(x / y);
         }
+
+        // 기본 스칼라
+        fn random(st: vec2f) -> f32 {
+          return fract(sin(dot(st.xy, vec2f(12.9898, 78.233))) * 43758.5453123);
+        }
+        // 2D 좌표를 받아 무작위 2D 벡터 반환 (방향 계산 등에 유용)
+        fn random2(st: vec2f) -> vec2f {
+          let q = vec2f(
+              dot(st, vec2f(127.1, 311.7)),
+              dot(st, vec2f(269.5, 183.3))
+          );
+          return fract(sin(q) * 43758.5453123);
+        }
+        // 2D 좌표를 받아 무작위 3D 벡터 반환 (무작위 RGB 색상 지정에 유용)
+        fn random3(st: vec2f) -> vec3f {
+          let q = vec3f(
+              dot(st, vec2f(127.1, 311.7)),
+              dot(st, vec2f(269.5, 183.3)),
+              dot(st, vec2f(419.2, 371.9))
+          );
+          return fract(sin(q) * 43758.5453123);
+        }
+        // 기본 스칼라
+        fn pcg_random(seed: ptr<function, u32>) -> f32 {
+          *seed = *seed * 747796405u + 2891336453u;
+          let word = ((*seed >> ((*seed >> 28u) + 4u)) ^ *seed) * 277803737u;
+          let result = (word >> 22u) ^ word;
+          return f32(result) / 4294967295.0;
+        }
+        // vec2, vec3, vec4 확장 (내부에서 스칼라를 여러 번 호출)
+        fn pcg_random2(seed: ptr<function, u32>) -> vec2f {
+          return vec2f(pcg_random(seed), pcg_random(seed));
+        }
+        fn pcg_random3(seed: ptr<function, u32>) -> vec3f {
+          return vec3f(pcg_random(seed), pcg_random(seed), pcg_random(seed));
+        }
+        fn pcg_random4(seed: ptr<function, u32>) -> vec4f {
+          return vec4f(pcg_random(seed), pcg_random(seed), pcg_random(seed), pcg_random(seed));
+        }
   
         fn rotate2d(p: vec2f, a: f32) -> vec2f {
           let c = cos(a);
@@ -37,6 +76,9 @@ export const includeLibrary = {
         fn luma(rgb: vec3f) -> f32 {
           return dot(rgb, vec3f(0.2126, 0.7152, 0.0722));
         }
+        fn mask(c: vec4f) -> f32 {
+          return 1.0 - luma(mix(vec3f(1.0), c.rgb, c.a));
+        }
       `,
   },
   sdf: {
@@ -51,6 +93,22 @@ export const includeLibrary = {
           return min(a, b) - h * h * k * 0.25;
         }
   
+        fn sdLine(p: vec2f, a: vec2f, b: vec2f) -> f32 {
+          let pa = p - a;
+          let ba = b - a;
+          let h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+          return length(pa - ba * h);
+        }
+        fn sdLineExt(p: vec2f, a: vec2f, b: vec2f) -> f32 {
+          let pa = p - a;
+          let ba = b - a;
+          let ba_len_sq = dot(ba, ba);
+          if (ba_len_sq < 1e-6) {
+            return 1e6; 
+          }
+          let h = dot(pa, ba) / ba_len_sq; 
+          return length(pa - ba * h);
+        }
         fn sdCircle(p: vec2f, r: f32) -> f32 {
           return length(p) - r;
         }
@@ -89,10 +147,138 @@ export const includeLibrary = {
         }
       `,
   },
+  marching: {
+    requires: ["sdf"],
+    code: /* wgsl */ `
+      /* marching squares
+        // 각 cell의 꼭짓점 & 값
+        let p00 = iuv / grid;
+        let p10 = (iuv + vec2f(1.0, 0.0)) / grid;
+        let p11 = (iuv + vec2f(1.0, 1.0)) / grid;
+        let p01 = (iuv + vec2f(0.0, 1.0)) / grid;
+        let d00 = textureSampleLevel(tex0, tex0Sampler, p00, 0.0).a;
+        let d10 = textureSampleLevel(tex0, tex0Sampler, p10, 0.0).a;
+        let d11 = textureSampleLevel(tex0, tex0Sampler, p11, 0.0).a;
+        let d01 = textureSampleLevel(tex0, tex0Sampler, p01, 0.0).a;
+
+        // 가장 가까운 cell의 꼭짓점의 주변 3x3 꼭짓점의 값
+        let corner = iuv + round(fuv);
+        var v: array<f32, 9>;
+        for(var y = 0u; y < 3u; y++){
+          for(var x = 0u; x < 3u; x++){
+            let p = (corner+vec2f(f32(x)-1.0, f32(y)-1.0)) / grid;
+            v[y * 3u + x] = textureSampleLevel(tex, texSampler, p, 0.0).a;
+          }
+        }
+      */
+      fn marchIso(a: f32, b: f32, threshold: f32) -> f32 {
+        return (threshold - a) / (b - a);
+      }
+      fn marchCell(
+        p: vec2f,
+        d00: f32, d10: f32, d11: f32, d01: f32,
+        t: f32,
+        bLerp: bool
+      ) -> f32 {
+        let b00 = step(0.0, d00 - t);
+        let b10 = step(0.0, d10 - t);
+        let b11 = step(0.0, d11 - t);
+        let b01 = step(0.0, d01 - t);
+        let state = u32(b00 + b10 * 2.0 + b11 * 4.0 + b01 * 8.0);
+
+        var bm = vec2f(0.5, 0.0);
+        var tm = vec2f(0.5, 1.0);
+        var lm = vec2f(0.0, 0.5);
+        var rm = vec2f(1.0, 0.5);
+        if(bLerp){
+          bm = vec2f(marchIso(d00, d10, t), 0.0);
+          tm = vec2f(marchIso(d01, d11, t), 1.0);
+          lm = vec2f(0.0, marchIso(d00, d01, t));
+          rm = vec2f(1.0, marchIso(d10, d11, t));
+        }
+        // let bm = vec2f(marchIso(d00, d10, t), 0.0);
+        // let tm = vec2f(marchIso(d01, d11, t), 1.0);
+        // let lm = vec2f(0.0, marchIso(d00, d01, t));
+        // let rm = vec2f(1.0, marchIso(d10, d11, t));
+
+        var d = 1e6;
+        switch (state) {
+          case 1, 14: { d = sdLine(p, bm, lm); }
+          case 2, 13: { d = sdLine(p, bm, rm); }
+          case 3, 12: { d = sdLine(p, lm, rm); }
+          case 4, 11: { d = sdLine(p, tm, rm); }
+          case 6, 9:  { d = sdLine(p, tm, bm); }
+          case 7, 8:  { d = sdLine(p, tm, lm); }
+          case 5: {
+            let s = d00 * d11 - d10 * d01;
+            if (s > 0.0) { d = min(sdLine(p, tm, lm), sdLine(p, bm, rm)); }
+            else         { d = min(sdLine(p, tm, rm), sdLine(p, bm, lm)); }
+          }
+          case 10: {
+            let s = d00 * d11 - d10 * d01;
+            if (s > 0.0) { d = min(sdLine(p, tm, rm), sdLine(p, bm, lm)); }
+            else         { d = min(sdLine(p, tm, lm), sdLine(p, bm, rm)); }
+          }
+          default: {}
+        }
+        return d;
+      }
+      fn marchCell_alt(
+        p: vec2f,
+        d00: f32, d10: f32, d11: f32, d01: f32,
+        t: f32
+      ) -> f32 {
+        let b00 = step(0.0, d00 - t);
+        let b10 = step(0.0, d10 - t);
+        let b11 = step(0.0, d11 - t);
+        let b01 = step(0.0, d01 - t);
+        let state = u32(b00 + b10 * 2.0 + b11 * 4.0 + b01 * 8.0);
+        let bm = vec2f(0.5, 0.0);
+        let tm = vec2f(0.5, 1.0);
+        let lm = vec2f(0.0, 0.5);
+        let rm = vec2f(1.0, 0.5);
+
+        var d = 1e6;
+        switch (state) {
+          case 1, 14: { d = min(sdLine(p, tm, lm), sdLine(p, bm, rm)); }
+          case 2, 13: { d = min(sdLine(p, tm, rm), sdLine(p, bm, lm)); }
+          case 3, 12: { d = sdLine(p, tm, bm); }
+          case 4, 11: { d = min(sdLine(p, tm, lm), sdLine(p, bm, rm)); }
+          case 6, 9:  { d = sdLine(p, lm, rm); }
+          case 7, 8:  { d = min(sdLine(p, tm, rm), sdLine(p, bm, lm)); }
+          case 5: {
+            let s = d00 * d11 - d10 * d01;
+            if (s > 0.0) { d = min(sdLine(p, tm, lm), sdLine(p, bm, rm)); }
+            else         { d = min(sdLine(p, tm, rm), sdLine(p, bm, lm)); }
+          }
+          case 10: {
+            let s = d00 * d11 - d10 * d01;
+            if (s > 0.0) { d = min(sdLine(p, tm, rm), sdLine(p, bm, lm)); }
+            else         { d = min(sdLine(p, tm, lm), sdLine(p, bm, rm)); }
+          }
+          default: {}
+        }
+        return d;
+      }
+      fn marchGrid(fuv: vec2f, v: array<f32, 9>, t: f32) -> f32 {
+        var d = 1e6;
+        let o = round(fuv);
+        for (var cy = 0u; cy < 2u; cy++) {
+          for (var cx = 0u; cx < 2u; cx++) {
+            let lp = fuv - o - vec2f(f32(cx) - 1.0, f32(cy) - 1.0);
+            d = min(d, marchCell(lp,
+              v[cy * 3u + cx], v[cy * 3u + cx + 1u],
+              v[(cy + 1u) * 3u + cx + 1u], v[(cy + 1u) * 3u + cx]
+            , t, true));
+          }
+        }
+        return d;
+      }
+    `,
+  },
   gesture: {
     code: /* wgsl */ `
     const MAX_TOUCHES: i32 = 5;
-
     fn touch(i: i32) -> vec4f {
       return global.touches[i];
     }

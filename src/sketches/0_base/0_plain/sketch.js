@@ -1,8 +1,11 @@
 import { Renderer } from "@/webgpu/engine/Renderer";
 import { createGesture } from "@/webgpu/utils/gesture";
 import { createTimer } from "@/webgpu/utils/timer";
+import { loadMsdfFont, bindMsdfFont } from "@/webgpu/utils/msdfFont";
+import { ComputePass } from "@/webgpu/engine/ComputePass";
 import { createPass } from "./passes/pass";
 import { shader } from "./shaders/shader";
+import { computeShader } from "./shaders/computeShader";
 
 export async function runSketch({ canvas }) {
   const timer = createTimer();

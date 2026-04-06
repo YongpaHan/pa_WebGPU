@@ -45,10 +45,10 @@ fn vertexMain(@location(0) pos: vec2f) -> VertexOut {
 
 @fragment
 fn fragmentMain(in: VertexOut) -> @location(0) vec4f {
+  let time = global.time;
   let rs = max(global.resolution.xy, vec2f(1.0));
   let aspect = rs / min(rs.x, rs.y);
   let uv = in.uv;
-  let time = global.time;
 
   // Example when using local uniforms:
   // let exposure = local.exposure;
@@ -65,6 +65,6 @@ fn fragmentMain(in: VertexOut) -> @location(0) vec4f {
 `,
 });
 
-export const builtShader = shader;
-export const shaderCode = shader.code;
-export const shaderContract = shader.contract;
+// export const builtShader = shader;
+// export const shaderCode = shader.code;
+// export const shaderContract = shader.contract;
